@@ -1,0 +1,233 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QM2 Interactive Boxplots</title>
+
+  <!-- Plotly for interactive charts -->
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    h2 { margin: 0 0 6px 0; }
+    .sub { color:#666; margin:0 0 14px 0; font-size: 13px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
+    .panel { border:1px solid #ddd; border-radius:10px; padding:12px; }
+    label { display:block; font-weight:600; margin-bottom:6px; }
+    select, input[type="text"] { padding:8px; border:1px solid #ccc; border-radius:8px; }
+    input[type="text"] { width: 260px; }
+    select[multiple] { width: 340px; height: 220px; }
+    button { padding:8px 12px; border:1px solid #ccc; border-radius:10px; background:#fff; cursor:pointer; }
+    button:hover { background:#f6f6f6; }
+    .charts { display:grid; grid-template-columns: 1fr; gap:18px; margin-top: 14px; }
+    .chart { width: 100%; height: 480px; }
+    .hint { color:#666; font-size:13px; margin-top:6px; }
+    .status { margin-top:8px; font-size:13px; color:#444; }
+  </style>
+</head>
+
+<body>
+  <h2>Interactive Boxplot Comparison</h2>
+  <p class="sub">Choose a country, search and select multiple areas, then plot Temperature and GDP per Capita across <b>all years</b>.</p>
+
+  <div class="row">
+    <div class="panel">
+      <label for="country">Country</label>
+      <select id="country"></select>
+      <div class="status" id="meta"></div>
+    </div>
+
+    <div class="panel">
+      <label for="search">Search area</label>
+      <input id="search" type="text" placeholder="e.g., Tokyo / Selangor" />
+      <div class="hint">Tip: Cmd (Mac) / Ctrl (Windows) to multi-select</div>
+    </div>
+
+    <div class="panel">
+      <label id="areasLabel" for="areas">Areas</label>
+      <select id="areas" multiple></select>
+      <div class="row" style="margin-top:10px;">
+        <button id="selectAll">Select all</button>
+        <button id="clearAll">Clear</button>
+        <button id="plotBtn">Plot</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="charts">
+    <div id="tempChart" class="chart"></div>
+    <div id="gdpChart" class="chart"></div>
+  </div>
+
+<script>
+  const COUNTRY_KEYS = ["japan", "china", "indonesia", "korea", "malaysia", "thailand", "vietnam"];
+  const COUNTRY_LABELS = {
+    japan: "Japan",
+    china: "China",
+    indonesia: "Indonesia",
+    korea: "Korea",
+    malaysia: "Malaysia",
+    thailand: "Thailand",
+    vietnam: "Vietnam"
+  };
+
+  const META = {"japan": {"rows": 165, "areas": 15, "year_min": 2011, "year_max": 2021}, "china": {"rows": 90, "areas": 9, "year_min": 2006, "year_max": 2015}, "indonesia": {"rows": 204, "areas": 34, "year_min": 2010, "year_max": 2015}, "korea": {"rows": 102, "areas": 17, "year_min": 2015, "year_max": 2020}, "malaysia": {"rows": 100, "areas": 10, "year_min": 2015, "year_max": 2024}, "thailand": {"rows": 90, "areas": 9, "year_min": 2016, "year_max": 2025}, "vietnam": {"rows": 130, "areas": 13, "year_min": 2015, "year_max": 2024}};
+
+  const AREA_COL = "AREA";
+  const TEMP_COL = "TEMPERATURE";
+  const GDP_COL  = "GDP PER CAPITA";
+
+  const countryEl = document.getElementById("country");
+  const metaEl = document.getElementById("meta");
+  const searchEl = document.getElementById("search");
+  const areasEl = document.getElementById("areas");
+  const areasLabelEl = document.getElementById("areasLabel");
+
+  const plotBtn = document.getElementById("plotBtn");
+  const selectAllBtn = document.getElementById("selectAll");
+  const clearAllBtn = document.getElementById("clearAll");
+
+  let DATA = [];
+  let ALL_AREAS = [];
+
+  function setCountryOptions() {
+    countryEl.innerHTML = "";
+    COUNTRY_KEYS.forEach(k => {
+      const opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = COUNTRY_LABELS[k] || k;
+      countryEl.appendChild(opt);
+    });
+    countryEl.value = "japan";
+  }
+
+  function renderMeta(key) {
+    const m = META[key];
+    if (!m) {
+      metaEl.textContent = "";
+      return;
+    }
+    metaEl.textContent = `Rows: ${m.rows.toLocaleString()} · Areas: ${m.areas.toLocaleString()} · Years: ${m.year_min}–${m.year_max}`;
+  }
+
+  function setOptions(list) {
+    areasEl.innerHTML = "";
+    list.forEach(a => {
+      const opt = document.createElement("option");
+      opt.value = a;
+      opt.textContent = a;
+      areasEl.appendChild(opt);
+    });
+  }
+
+  function getSelected() {
+    return Array.from(areasEl.selectedOptions).map(o => o.value);
+  }
+
+  function selectFirstN(n) {
+    Array.from(areasEl.options).slice(0, n).forEach(o => o.selected = true);
+  }
+
+  function filterAreas(q) {
+    const query = (q || "").trim().toLowerCase();
+    const selected = new Set(getSelected());
+
+    const filtered = query
+      ? ALL_AREAS.filter(a => a.toLowerCase().includes(query))
+      : ALL_AREAS;
+
+    setOptions(filtered);
+
+    // restore selection if still visible
+    Array.from(areasEl.options).forEach(o => {
+      if (selected.has(o.value)) o.selected = true;
+    });
+  }
+
+  function plot() {
+    const selected = getSelected();
+    if (!selected.length) return;
+
+    const byArea = {};
+    selected.forEach(a => byArea[a] = { temp: [], gdp: [] });
+
+    for (const r of DATA) {
+      const a = String(r[AREA_COL]);
+      if (!byArea[a]) continue;
+
+      const t = Number(r[TEMP_COL]);
+      const g = Number(r[GDP_COL]);
+
+      if (!Number.isNaN(t)) byArea[a].temp.push(t);
+      if (!Number.isNaN(g)) byArea[a].gdp.push(g);
+    }
+
+    const tempTraces = selected.map(a => ({
+      type: "box",
+      name: a,
+      y: byArea[a].temp,
+      boxpoints: "outliers"
+    }));
+
+    const gdpTraces = selected.map(a => ({
+      type: "box",
+      name: a,
+      y: byArea[a].gdp,
+      boxpoints: "outliers"
+    }));
+
+    Plotly.newPlot("tempChart", tempTraces, {
+      title: "Temperature (all years)",
+      yaxis: { title: "°C" },
+      margin: { t: 50, l: 60, r: 20, b: 140 }
+    }, { responsive: true });
+
+    Plotly.newPlot("gdpChart", gdpTraces, {
+      title: "GDP per Capita (all years)",
+      yaxis: { title: "USD" },
+      margin: { t: 50, l: 60, r: 20, b: 140 }
+    }, { responsive: true });
+  }
+
+  async function loadCountry(key) {
+    // label tweak for Malaysia
+    areasLabelEl.textContent = (key === "malaysia") ? "States" : "Areas";
+
+    renderMeta(key);
+    searchEl.value = "";
+    Plotly.purge("tempChart");
+    Plotly.purge("gdpChart");
+
+    const resp = await fetch(`./data/${key}.json`);
+    DATA = await resp.json();
+
+    ALL_AREAS = Array.from(new Set(DATA.map(r => String(r[AREA_COL])))).sort();
+    setOptions(ALL_AREAS);
+    selectFirstN(5);
+    plot();
+  }
+
+  // init
+  setCountryOptions();
+  renderMeta(countryEl.value);
+  loadCountry(countryEl.value);
+
+  // events
+  countryEl.addEventListener("change", () => loadCountry(countryEl.value));
+  searchEl.addEventListener("input", e => filterAreas(e.target.value));
+  plotBtn.addEventListener("click", plot);
+
+  selectAllBtn.addEventListener("click", () => {
+    Array.from(areasEl.options).forEach(o => o.selected = true);
+  });
+
+  clearAllBtn.addEventListener("click", () => {
+    Array.from(areasEl.options).forEach(o => o.selected = false);
+    Plotly.purge("tempChart");
+    Plotly.purge("gdpChart");
+  });
+</script>
+
+</body>
+</html>
